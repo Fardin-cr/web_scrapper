@@ -1,216 +1,201 @@
 """
-Flask server — serves the dashboard and exposes APIs for scraping and export.
-Usage: python server.py
-Then open: http://localhost:5000
+server.py — Flask backend for SteamLens dashboard
 """
-import csv
-import io
-import json
-import subprocess
-import threading
+import io, csv, sys, sqlite3, threading, traceback, importlib
 from pathlib import Path
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
-ROOT     = Path(__file__).parent
-DATA_DIR = ROOT / "data" / "processed"
-DB_PATH  = DATA_DIR / "steam_games.db"
+ROOT   = Path(__file__).parent
+DB     = ROOT / "data" / "steam_games.db"
+PYTHON = sys.executable
 
 app = Flask(__name__, static_folder=str(ROOT / "dashboard"))
 
+# ── CORS headers on every response ────────────────────────────────────────
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"]  = "*"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
-@app.route("/api/clear", methods=["OPTIONS"])
-@app.route("/api/scrape", methods=["OPTIONS"])
-@app.route("/api/export", methods=["OPTIONS"])
-def preflight():
-    return "", 204
+# ── Shared state ──────────────────────────────────────────────────────────
+state = {"running": False, "task": "", "log": [], "done": False, "error": None}
 
-# ── Scrape state ──────────────────────────────────────────
-scrape_state = {"running": False, "log": [], "done": False, "error": None, "cleared": False, "proc": None}
+def log(msg):
+    """Add a line to the log and print it to terminal."""
+    print(msg, flush=True)
+    state["log"].append(str(msg))
+    if len(state["log"]) > 300:
+        state["log"] = state["log"][-300:]
 
-
-def run_spider(genre: str, max_pages: int, test: bool):
-    scrape_state["running"] = True
-    scrape_state["done"]    = False
-    scrape_state["error"]   = None
-    scrape_state["log"]     = []
-    scrape_state["cleared"] = False
-
-    args = ["scrapy", "crawl", "steam", "-s", "LOG_LEVEL=INFO"]
-    if test:
-        args += ["-a", "test=true"]
-    if genre:
-        args += ["-a", f"filter_genre={genre}"]
-    args += ["-a", f"max_pages={max_pages}"]
-
+# ── Run scraper in subprocess ─────────────────────────────────────────────
+def _run_scraper():
+    import subprocess, os, sys
+    state.update(running=True, task="Scraper", log=[], done=False, error=None)
+    log("[SCRAPER] Starting...")
     try:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
         proc = subprocess.Popen(
-            args, cwd=ROOT,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, encoding="utf-8", errors="replace"
+            [sys.executable, "-m", "scrapy", "crawl", "steam"],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env
         )
-        scrape_state["proc"] = proc
+        log(f"[SCRAPER] PID {proc.pid}")
         for line in proc.stdout:
-            line = line.rstrip()
-            scrape_state["log"].append(line)
-            if len(scrape_state["log"]) > 200:
-                scrape_state["log"] = scrape_state["log"][-200:]
+            log(line.rstrip())
         proc.wait()
-        scrape_state["error"] = None if proc.returncode == 0 else "Spider exited with errors"
+        if proc.returncode == 0:
+            state["error"] = None
+            log("[SCRAPER] Done.")
+        else:
+            state["error"] = f"Exited with code {proc.returncode}"
     except Exception as e:
-        scrape_state["error"] = str(e)
+        state["error"] = str(e)
+        log(f"[SCRAPER] Error: {e}")
+        log(traceback.format_exc())
     finally:
-        scrape_state["running"] = False
-        scrape_state["done"]    = True
-        scrape_state["proc"]    = None
+        state.update(running=False, done=True)
 
+# ── Run model directly in-process ─────────────────────────────────────────
+def _run_model():
+    state.update(running=True, task="Clustering", log=[], done=False, error=None)
+    log("[MODEL] Starting K-Means clustering...")
+    buf = io.StringIO()
+    try:
+        sys.path.insert(0, str(ROOT))
+        if "model" in sys.modules:
+            importlib.reload(sys.modules["model"])
+        else:
+            import model  # noqa
+        from contextlib import redirect_stdout, redirect_stderr
+        with redirect_stdout(buf), redirect_stderr(buf):
+            sys.modules["model"].run()
+        for line in buf.getvalue().splitlines():
+            log(line)
+        state["error"] = None
+        log("[MODEL] Done successfully.")
+    except Exception as e:
+        state["error"] = str(e)
+        log(f"[MODEL] Exception: {e}")
+        log(traceback.format_exc())
+        for line in buf.getvalue().splitlines():
+            log(line)
+    finally:
+        state.update(running=False, done=True)
 
-# ── Routes ────────────────────────────────────────────────
-
+# ── Routes ────────────────────────────────────────────────────────────────
 @app.route("/")
 def index():
     return send_from_directory(str(ROOT / "dashboard"), "index.html")
 
+@app.route("/<path:filename>")
+def static_file(filename):
+    return send_from_directory(str(ROOT / "dashboard"), filename)
 
 @app.route("/api/data")
 def api_data():
-    """Return all games from SQLite as JSON array."""
-    if scrape_state["cleared"] or not DB_PATH.exists():
+    if not DB.exists():
         return jsonify([])
-    try:
-        import sqlite3
-        conn = sqlite3.connect(str(DB_PATH))
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM games ORDER BY review_count DESC").fetchall()
-        conn.close()
-        return jsonify([dict(r) for r in rows])
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    conn = sqlite3.connect(str(DB))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM games ORDER BY review_count DESC").fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
 
-
-@app.route("/api/scrape", methods=["POST"])
+@app.route("/api/scrape", methods=["GET", "POST", "OPTIONS"])
 def api_scrape():
-    """Start a scrape job."""
-    if scrape_state["running"]:
-        return jsonify({"error": "Already running"}), 409
-
-    body      = request.get_json(silent=True) or {}
-    genre     = body.get("genre", "")
-    max_pages = int(body.get("max_pages", 1))
-    test      = body.get("test", True)
-
-    t = threading.Thread(target=run_spider, args=(genre, max_pages, test), daemon=True)
-    t.start()
+    if request.method == "OPTIONS":
+        return "", 204
+    if state["running"]:
+        return jsonify({"error": "A task is already running"}), 409
+    threading.Thread(target=_run_scraper, daemon=True).start()
     return jsonify({"status": "started"})
 
+@app.route("/api/model", methods=["GET", "POST", "OPTIONS"])
+def api_model():
+    if request.method == "OPTIONS":
+        return "", 204
+    if state["running"]:
+        return jsonify({"error": "A task is already running"}), 409
+    threading.Thread(target=_run_model, daemon=True).start()
+    return jsonify({"status": "started"})
 
-@app.route("/api/scrape/stop", methods=["POST"])
-def api_scrape_stop():
-    proc = scrape_state.get("proc")
-    if proc and scrape_state["running"]:
-        proc.terminate()
-        return jsonify({"status": "stopped"})
-    return jsonify({"status": "not running"})
-
-
-@app.route("/api/scrape/status")
-def api_scrape_status():
+@app.route("/api/debug")
+def api_debug():
     return jsonify({
-        "running": scrape_state["running"],
-        "done":    scrape_state["done"],
-        "error":   scrape_state["error"],
-        "log":     scrape_state["log"][-30:],
+        "version": "v3-clean-rewrite",
+        "python":  str(PYTHON),
+        "root":    str(ROOT),
+        "db":      str(DB.exists()),
+        "state":   state
     })
 
+@app.route("/api/status")
+def api_status():
+    return jsonify({
+        "running": state["running"],
+        "task":    state["task"],
+        "done":    state["done"],
+        "error":   state["error"],
+        "log":     state["log"][-50:]
+    })
 
 @app.route("/api/export")
 def api_export():
-    """Export filtered data as a clean CSV download."""
-    if not DB_PATH.exists():
-        return jsonify({"error": "No data yet"}), 404
-
-    genre  = request.args.get("genre", "")
+    if not DB.exists():
+        return jsonify({"error": "No data"}), 404
+    genre  = request.args.get("genre",  "")
     rating = request.args.get("rating", "")
-    price  = request.args.get("price", "")
-    q      = request.args.get("q", "").lower()
+    price  = request.args.get("price",  "")
+    q      = request.args.get("q",      "").lower()
 
-    import sqlite3
-    conn = sqlite3.connect(str(DB_PATH))
+    conn = sqlite3.connect(str(DB))
     conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM games").fetchall()
+    rows = [dict(r) for r in conn.execute("SELECT * FROM games").fetchall()]
     conn.close()
 
-    games = []
-    for row in rows:
-        row = dict(row)
-        px = _float(row.get("price"))
-        rt = row.get("rating", "")
-        if genre  and row.get("genre") != genre: continue
-        if q      and q not in f"{row.get('title','')} {row.get('developer','')} {row.get('tags','')}".lower(): continue
+    filtered = []
+    for r in rows:
+        p  = float(r.get("price") or 0)
+        rt = str(r.get("rating") or "")
+        if genre  and r.get("genre") != genre: continue
+        if q      and q not in f"{r.get('title','')} {r.get('developer','')} {r.get('tags','')}".lower(): continue
         if rating == "pos"   and "positive" not in rt.lower(): continue
         if rating == "mixed" and "mixed"    not in rt.lower(): continue
         if rating == "neg"   and "negative" not in rt.lower(): continue
-        if price  == "free"  and px != 0:  continue
-        if price  == "u10"   and (px == 0 or px >= 10): continue
-        if price  == "u20"   and (px == 0 or px >= 20): continue
-        if price  == "o20"   and px < 20:  continue
-        games.append(row)
+        if price  == "free"  and p != 0:         continue
+        if price  == "u10"   and (p == 0 or p >= 10): continue
+        if price  == "u20"   and (p == 0 or p >= 20): continue
+        if price  == "o20"   and p < 20:          continue
+        filtered.append(r)
 
-    if not games:
-        return jsonify({"error": "No data matches filters"}), 404
+    if not filtered:
+        return jsonify({"error": "No data matches"}), 404
 
-    # Build clean CSV in memory
-    fields = ["app_id","title","genre","price","original_price","discount",
-              "rating","review_count","release_date","developer","tags","os_support","scraped_at"]
+    # Export WITHOUT scraped_at column
+    fields = ["app_id","title","genre","price","original_price",
+              "discount","rating","review_count","release_date",
+              "developer","tags","os_support"]
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore", lineterminator="\r\n")
-    writer.writeheader()
-    writer.writerows(games)
-
-    mem = io.BytesIO(buf.getvalue().encode("utf-8-sig"))  # utf-8-sig = Excel-friendly BOM
+    w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore", lineterminator="\r\n")
+    w.writeheader()
+    w.writerows(filtered)
+    mem = io.BytesIO(buf.getvalue().encode("utf-8-sig"))
     mem.seek(0)
-    return send_file(
-        mem,
-        mimetype="text/csv",
-        as_attachment=True,
-        download_name="steam_games_export.csv"
-    )
+    return send_file(mem, mimetype="text/csv", as_attachment=True,
+                     download_name="steam_games.csv")
 
-
-@app.route("/api/clear", methods=["DELETE"])
-def api_clear():
-    """Clear all game rows from SQLite."""
-    if scrape_state["running"]:
-        return jsonify({"error": "Cannot clear while scraping"}), 409
-    scrape_state["cleared"] = True
-    if DB_PATH.exists():
-        try:
-            import sqlite3
-            conn = sqlite3.connect(str(DB_PATH))
-            conn.execute("DELETE FROM games")
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-    return jsonify({"status": "cleared"})
-
-
-# ── Helpers ───────────────────────────────────────────────
-def _float(v):
-    try: return round(float(v), 2)
-    except: return 0.0
-
-def _int(v):
-    try: return int(str(v).replace(",",""))
-    except: return 0
-
-
+# ── Start ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    print("\n  SteamLens server running at http://localhost:5000\n")
-    app.run(debug=False, port=5000)
+    (ROOT / "data").mkdir(exist_ok=True)
+    (ROOT / "reports").mkdir(exist_ok=True)
+    print(f"\n  SteamLens  →  http://localhost:5001")
+    print(f"  Python     →  {PYTHON}\n")
+    app.run(debug=False, port=5001, use_reloader=False)

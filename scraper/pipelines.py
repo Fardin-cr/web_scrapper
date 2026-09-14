@@ -1,101 +1,75 @@
-import sqlite3
-import csv
-import re
-import os
-from datetime import datetime
+"""
+Pipeline: cleans each scraped item and saves it to SQLite.
+Data Cleaning steps:
+  - Strip currency symbols from price fields
+  - Convert discount / review_count to integers
+  - Join tags and OS lists into comma-separated strings
+  - Fill missing values with safe defaults
+"""
+import os, re, sqlite3
 from itemadapter import ItemAdapter
 
+DB = "data/steam_games.db"
 
-class CleaningPipeline:
-    def process_item(self, item, spider):
-        adapter = ItemAdapter(item)
-
-        # Clean price — strip currency symbols
-        for field in ("price", "original_price"):
-            val = adapter.get(field, "")
-            if isinstance(val, str):
-                cleaned = re.sub(r"[^\d.]", "", val)
-                adapter[field] = float(cleaned) if cleaned else 0.0
-
-        # Clean discount
-        discount = adapter.get("discount", "0")
-        if isinstance(discount, str):
-            cleaned = re.sub(r"[^\d]", "", discount)
-            adapter["discount"] = int(cleaned) if cleaned else 0
-
-        # Clean review count
-        rc = adapter.get("review_count", "0")
-        if isinstance(rc, str):
-            cleaned = re.sub(r"[^\d]", "", rc)
-            adapter["review_count"] = int(cleaned) if cleaned else 0
-
-        # Tags list to comma string
-        tags = adapter.get("tags", [])
-        if isinstance(tags, list):
-            adapter["tags"] = ", ".join(tags[:5])
-
-        # OS list to comma string
-        os_list = adapter.get("os_support", [])
-        if isinstance(os_list, list):
-            adapter["os_support"] = ", ".join(os_list)
-
-        adapter["scraped_at"] = datetime.utcnow().isoformat()
-
-        return item
-
-
-class SQLitePipeline:
+class SteamPipeline:
+    # ── open DB ────────────────────────────────────────────
     def open_spider(self, spider):
-        os.makedirs("data/processed", exist_ok=True)
-        self.conn = sqlite3.connect("data/processed/steam_games.db")
+        os.makedirs("data", exist_ok=True)
+        self.conn = sqlite3.connect(DB)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS games (
                 app_id         TEXT PRIMARY KEY,
                 title          TEXT,
+                genre          TEXT,
                 price          REAL,
                 original_price REAL,
                 discount       INTEGER,
                 rating         TEXT,
                 review_count   INTEGER,
-                release_date   TEXT,
                 developer      TEXT,
-                genre          TEXT,
+                release_date   TEXT,
                 tags           TEXT,
-                os_support     TEXT,
-                scraped_at     TEXT
-            )
-        """)
+                os_support     TEXT
+            )""")
         self.conn.commit()
+        self.seen = {r[0] for r in
+                     self.conn.execute("SELECT app_id FROM games")}
 
     def close_spider(self, spider):
         self.conn.close()
 
+    # ── clean + save ───────────────────────────────────────
     def process_item(self, item, spider):
-        adapter = ItemAdapter(item)
-        self.conn.execute("""
-            INSERT OR REPLACE INTO games VALUES (
-                :app_id, :title, :price, :original_price, :discount,
-                :rating, :review_count, :release_date, :developer,
-                :genre, :tags, :os_support, :scraped_at
-            )
-        """, dict(adapter))
+        a = ItemAdapter(item)
+        if a["app_id"] in self.seen:
+            return item                        # skip duplicate
+
+        # Clean price fields
+        for f in ("price", "original_price"):
+            raw = a.get(f, "0") or "0"
+            cleaned = re.sub(r"[^\d.]", "", str(raw))
+            a[f] = float(cleaned) if cleaned else 0.0
+
+        # Clean discount & review_count to int
+        for f in ("discount", "review_count"):
+            raw = a.get(f, "0") or "0"
+            cleaned = re.sub(r"[^\d]", "", str(raw))
+            a[f] = int(cleaned) if cleaned else 0
+
+        # Lists -> comma string
+        for f in ("tags", "os_support"):
+            val = a.get(f, [])
+            a[f] = ", ".join(val) if isinstance(val, list) else str(val or "")
+
+        # Save to DB
+        self.conn.execute(
+            "INSERT OR REPLACE INTO games "
+            "(app_id,title,genre,price,original_price,discount,rating,"
+            "review_count,developer,release_date,tags,os_support) "
+            "VALUES (:app_id,:title,:genre,:price,:original_price,"
+            ":discount,:rating,:review_count,:developer,"
+            ":release_date,:tags,:os_support)",
+            dict(a))
         self.conn.commit()
-        return item
-
-
-class CSVPipeline:
-    def open_spider(self, spider):
-        os.makedirs("data/processed", exist_ok=True)
-        self.file = open("data/processed/steam_games_raw.csv", "w", newline="", encoding="utf-8")
-        self.writer = None
-
-    def close_spider(self, spider):
-        self.file.close()
-
-    def process_item(self, item, spider):
-        adapter = ItemAdapter(item)
-        if self.writer is None:
-            self.writer = csv.DictWriter(self.file, fieldnames=adapter.field_names())
-            self.writer.writeheader()
-        self.writer.writerow(dict(adapter))
+        self.seen.add(a["app_id"])
         return item

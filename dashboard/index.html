@@ -2,202 +2,152 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SteamLens — Steam Games Dataset</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
-<link rel="stylesheet" href="style.css">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SteamLens</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 24px; background: #f5f5f5; color: #222 }
+  h2   { margin-bottom: 16px; color: #333 }
+
+  .controls { margin-bottom: 16px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+  button { padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: bold; color: #fff }
+  #btn-scrape { background: #5b21b6 }
+  #btn-model  { background: #065f46 }
+  #btn-export { background: #1e3a8a }
+  #status { font-size: 13px; color: #555; margin-left: 8px }
+
+  .filters { margin-bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap }
+  input, select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px }
+  input { width: 200px }
+
+  #count { font-size: 12px; color: #777; margin-bottom: 6px }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13px }
+  th { background: #e5e7eb; padding: 8px 10px; text-align: left; border: 1px solid #d1d5db; font-size: 12px }
+  td { padding: 7px 10px; border: 1px solid #e5e7eb }
+  tr:hover td { background: #f0f4ff }
+
+  .pages { margin-top: 12px; display: flex; gap: 10px; align-items: center }
+  .pg { padding: 5px 14px; border: 1px solid #999; background: #e5e7eb; border-radius: 4px; cursor: pointer; font-size: 13px; color: #333 }
+  .pg:disabled { opacity: .4; cursor: not-allowed }
+  .pg:not(:disabled):hover { background: #d1d5db }
+</style>
 </head>
 <body>
 
-<div id="tooltip" class="chart-tooltip" role="tooltip">
-  <div class="tt-lbl" id="tt-lbl"></div>
-  <div class="tt-val" id="tt-val"></div>
+<h2>&#9654; SteamLens — Steam Market Analysis</h2>
+
+<div class="controls">
+  <button id="btn-scrape" onclick="run('scrape')">Run Scraper</button>
+  <button id="btn-model"  onclick="run('model')">Run Clustering Model</button>
+  <button id="btn-export" onclick="exportCSV()">Export CSV</button>
+  <span id="status"></span>
 </div>
 
-<!-- HEADER -->
-<header>
-  <div class="hdr">
-    <a class="logo" href="#">
-      <div class="logo-mark">
-        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
-      </div>
-      <span class="logo-name">Steam<em>Lens</em></span>
-    </a>
-    <nav class="hdr-pills">
-      <span class="pill pill-purple"><span class="dot"></span>Live Dataset</span>
-      <span class="pill pill-gray">store.steampowered.com</span>
-      <span class="pill pill-gray" id="hdr-date"></span>
-    </nav>
-  </div>
-</header>
+<div class="filters">
+  <input type="search" id="f-q" placeholder="Search title, developer, tags...">
+  <select id="f-genre"><option value="">All Genres</option></select>
+</div>
+<div id="count"></div>
 
-<!-- STATS -->
-<section>
-  <div class="stats-inner">
-    <div class="sc cp"><div class="corner"></div><div class="sc-eye">Total Games</div><div class="sc-val cp" id="s-total">—</div><div class="sc-sub">scraped from Steam</div></div>
-    <div class="sc cg"><div class="corner"></div><div class="sc-eye">Avg Price</div><div class="sc-val cg" id="s-price">—</div><div class="sc-sub">USD · paid only</div></div>
-    <div class="sc cr"><div class="corner"></div><div class="sc-eye">Top Genre</div><div class="sc-val cr" id="s-genre" style="font-size:1.1rem">—</div><div class="sc-sub">most collected</div></div>
-    <div class="sc cb"><div class="corner"></div><div class="sc-eye">Free to Play</div><div class="sc-val cb" id="s-free">—</div><div class="sc-sub">zero price games</div></div>
-  </div>
-</section>
+<table>
+  <thead><tr>
+    <th>Title</th><th>Genre</th><th>Price</th>
+    <th>Rating</th><th>Reviews</th><th>Developer</th><th>Segment</th>
+  </tr></thead>
+  <tbody id="tbody"><tr><td colspan="7" style="text-align:center;padding:30px;color:#999">Loading...</td></tr></tbody>
+</table>
+<div class="pages" id="pages"></div>
 
-<main>
+<script>
+let ALL = [], FILTERED = [], curPage = 1;
+const PAGE = 25;
 
-  <!-- CHARTS -->
-  <div class="charts-row">
-    <div class="card" id="gc">
-      <div class="card-hdr">
-        <div class="card-title"><div class="title-bar"></div>Games by Genre</div>
-        <span class="badge bp" style="margin-left:auto">Bar Chart</span>
-      </div>
-      <div class="card-body"><div class="chart-area"><canvas id="chart-genre"></canvas></div></div>
-    </div>
-    <div class="card" id="pc">
-      <div class="card-hdr">
-        <div class="card-title"><div class="title-bar"></div>Price Distribution</div>
-        <span class="badge bg" style="margin-left:auto">Histogram</span>
-      </div>
-      <div class="card-body"><div class="chart-area"><canvas id="chart-price"></canvas></div></div>
-    </div>
-  </div>
+window.onload = load;
 
-  <!-- SCRAPE CONTROLS -->
-  <div class="card" id="sc-panel">
-    <div class="card-hdr">
-      <div class="card-title"><div class="title-bar"></div>Scrape Controls</div>
-      <div id="sc-state-pill" class="pill pill-gray" style="margin-left:auto">● Idle</div>
-    </div>
-    <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+async function load() {
+  try {
+    const r = await fetch('/api/data');
+    ALL = await r.json();
+    if (!Array.isArray(ALL)) ALL = [];
+    const genres = [...new Set(ALL.map(g => g.genre).filter(Boolean))].sort();
+    const sel = document.getElementById('f-genre');
+    sel.innerHTML = '<option value="">All Genres</option>';
+    genres.forEach(g => sel.insertAdjacentHTML('beforeend', `<option value="${esc(g)}">${esc(g)}</option>`));
+    let t;
+    document.getElementById('f-q').addEventListener('input', () => { clearTimeout(t); t = setTimeout(filter, 200) });
+    document.getElementById('f-genre').addEventListener('change', filter);
+    filter();
+  } catch(e) {
+    showMsg('No data yet — click Run Scraper first.');
+  }
+}
 
-      <!-- Controls row -->
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <span class="scrape-label">Genre</span>
-        <select class="scrape-select" id="sc-genre">
-          <option value="">All Genres</option>
-          <option value="Action">Action</option>
-          <option value="Adventure">Adventure</option>
-          <option value="RPG">RPG</option>
-          <option value="Strategy">Strategy</option>
-          <option value="Simulation">Simulation</option>
-          <option value="Indie">Indie</option>
-          <option value="Sports">Sports</option>
-          <option value="Racing">Racing</option>
-          <option value="Casual">Casual</option>
-          <option value="Free to Play">Free to Play</option>
-        </select>
+function filter() {
+  const q = document.getElementById('f-q').value.toLowerCase();
+  const g = document.getElementById('f-genre').value;
+  FILTERED = ALL.filter(d => {
+    if (g && d.genre !== g) return false;
+    if (q && !`${d.title||''} ${d.developer||''} ${d.tags||''}`.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  curPage = 1;
+  render();
+}
 
-        <span class="scrape-label">Rows</span>
-        <select class="scrape-select" id="sc-rows" style="min-width:100px">
-          <option value="50">~50 rows</option>
-          <option value="100">~100 rows</option>
-          <option value="200">~200 rows</option>
-          <option value="500">~500 rows</option>
-          <option value="1000">~1 000 rows</option>
-          <option value="2000" selected>~2 000 rows</option>
-        </select>
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
 
-        <button class="btn btn-primary" id="btn-scrape" onclick="startScrape()">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Scrape Now
-        </button>
+function render() {
+  const total = FILTERED.length, totalPages = Math.max(1, Math.ceil(total / PAGE));
+  curPage = Math.min(curPage, totalPages);
+  const start = (curPage - 1) * PAGE, rows = FILTERED.slice(start, start + PAGE);
+  document.getElementById('count').textContent =
+    `Showing ${total ? start+1 : 0}–${Math.min(start+PAGE, total)} of ${total.toLocaleString()} games`;
+  if (!rows.length) { showMsg('No results.'); document.getElementById('pages').innerHTML = ''; return; }
+  document.getElementById('tbody').innerHTML = rows.map(d => `<tr>
+    <td>${esc(d.title)}</td>
+    <td>${esc(d.genre||'—')}</td>
+    <td>${d.price === 0 ? 'Free' : '$' + Number(d.price).toFixed(2)}</td>
+    <td>${esc(d.rating||'N/A')}</td>
+    <td>${d.review_count > 0 ? Number(d.review_count).toLocaleString() : '—'}</td>
+    <td>${esc(d.developer||'—')}</td>
+    <td>${esc(d.segment||'—')}</td>
+  </tr>`).join('');
+  const el = document.getElementById('pages');
+  el.innerHTML = totalPages > 1
+    ? `<button class="pg" onclick="goPage(${curPage-1})" ${curPage===1?'disabled':''}>&#8249; Prev</button>
+       <span style="font-size:13px;color:#555">Page ${curPage} of ${totalPages}</span>
+       <button class="pg" onclick="goPage(${curPage+1})" ${curPage===totalPages?'disabled':''}>Next &#8250;</button>` : '';
+}
 
-        <button class="btn" id="btn-stop" onclick="stopScrape()" style="display:none;background:rgba(251,191,36,.12);color:var(--yellow);border-color:rgba(251,191,36,.3)">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>
-          Stop
-        </button>
+function goPage(p) { curPage = p; render(); window.scrollTo(0,0) }
+function showMsg(m) { document.getElementById('tbody').innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:#999">${m}</td></tr>` }
 
-        <button class="btn" style="background:var(--red-dim);color:var(--red);border-color:rgba(239,68,68,.3)" onclick="clearData()">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
-          Clear Data
-        </button>
-      </div>
+async function run(type) {
+  document.getElementById('status').textContent = 'Starting ' + type + '...';
+  try {
+    const r = await fetch('/api/' + type, { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok) { document.getElementById('status').textContent = 'Error: ' + (j.error||r.status); return; }
+    document.getElementById('status').textContent = 'Running...';
+    const poll = setInterval(async () => {
+      try {
+        const s = await (await fetch('/api/status')).json();
+        if (!s.running && s.done) {
+          clearInterval(poll);
+          document.getElementById('status').textContent = s.error ? 'Error: ' + s.error : 'Done!';
+          if (!s.error) await load();
+        }
+      } catch(_) {}
+    }, 1500);
+  } catch(e) { document.getElementById('status').textContent = 'Error: ' + e.message }
+}
 
-      <!-- Live status bar -->
-      <div id="sc-statusbar" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;display:flex;align-items:center;gap:12px">
-        <div id="sc-spinner" class="scrape-spinner" style="display:none"></div>
-        <div style="flex:1;min-width:0">
-          <div id="sc-status-txt" style="font-family:var(--mono);font-size:.75rem;color:var(--text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Ready — choose genre &amp; rows, then click Scrape Now</div>
-          <div id="sc-progress" style="margin-top:6px;height:3px;background:var(--surface-3);border-radius:99px;overflow:hidden;display:none">
-            <div id="sc-bar" style="height:100%;background:linear-gradient(90deg,var(--primary),var(--accent));width:0%;transition:width 1s linear;border-radius:99px"></div>
-          </div>
-        </div>
-        <div id="sc-live-count" style="font-family:var(--mono);font-size:.88rem;font-weight:700;color:var(--secondary);white-space:nowrap;display:none">0 rows</div>
-      </div>
-
-      <!-- Log box -->
-      <div id="log-box" style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-family:var(--mono);font-size:.68rem;color:var(--text-3);height:36px;overflow:hidden;transition:height .3s var(--ease);white-space:pre-wrap;line-height:1.6;cursor:pointer" onclick="toggleLog()" title="Click to expand log">
-        Waiting for scrape to start…
-      </div>
-
-    </div>
-  </div>
-
-  <!-- DATA TABLE -->
-  <div class="card" id="tc">
-    <div class="card-hdr">
-      <div class="card-title"><div class="title-bar"></div>Game Catalog</div>
-      <button class="btn btn-green" style="margin-left:auto" onclick="exportCSV()">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        Export CSV
-      </button>
-    </div>
-    <div class="card-body">
-
-      <div class="filters-row">
-        <div class="search-wrap">
-          <svg class="s-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/></svg>
-          <input class="search-input" type="search" id="f-q" placeholder="Search title, developer, tags…" aria-label="Search games">
-        </div>
-        <select class="filter-select" id="f-genre" aria-label="Filter by genre"><option value="">All Genres</option></select>
-        <select class="filter-select" id="f-rating" aria-label="Filter by rating">
-          <option value="">All Ratings</option>
-          <option value="pos">Positive</option>
-          <option value="mixed">Mixed</option>
-          <option value="neg">Negative</option>
-        </select>
-        <select class="filter-select" id="f-price" aria-label="Filter by price">
-          <option value="">Any Price</option>
-          <option value="free">Free</option>
-          <option value="u10">Under $10</option>
-          <option value="u20">Under $20</option>
-          <option value="o20">$20+</option>
-        </select>
-        <div class="result-badge" aria-live="polite">Showing <span id="f-count">—</span> games</div>
-      </div>
-
-      <div class="table-scroll" role="region" aria-label="Steam games table" tabindex="0">
-        <table id="tbl" aria-label="Steam games dataset">
-          <thead><tr>
-            <th tabindex="0" data-col="title">Title</th>
-            <th tabindex="0" data-col="genre">Genre</th>
-            <th tabindex="0" data-col="price" aria-sort="ascending">Price</th>
-            <th tabindex="0" data-col="discount">Disc.</th>
-            <th tabindex="0" data-col="rating">Rating</th>
-            <th tabindex="0" data-col="review_count">Reviews</th>
-            <th tabindex="0" data-col="developer">Developer</th>
-            <th tabindex="0" data-col="release_date">Released</th>
-            <th class="no-sort">OS</th>
-          </tr></thead>
-          <tbody id="tbody"></tbody>
-        </table>
-      </div>
-      <div class="pagination" id="pages" role="navigation" aria-label="Pagination"></div>
-
-    </div>
-  </div>
-
-</main>
-
-<footer>
-  <span>Data from <a href="https://store.steampowered.com" target="_blank">store.steampowered.com</a> · Python + Scrapy</span>
-  <div style="display:flex;gap:8px">
-    <span class="badge bp">SteamLens</span>
-    <span class="badge bx">Web Scraping Assignment</span>
-  </div>
-</footer>
-
-<script src="app.js"></script>
+function exportCSV() {
+  const q = document.getElementById('f-q').value, g = document.getElementById('f-genre').value;
+  const p = new URLSearchParams(); if (q) p.set('q',q); if (g) p.set('genre',g);
+  const a = document.createElement('a'); a.href = '/api/export?' + p; a.download = 'steam_games.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+}
+</script>
 </body>
 </html>
