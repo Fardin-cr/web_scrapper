@@ -3,7 +3,7 @@ main.py — Entry point
 Usage:
     python main.py scrape    # scrape ~2000 Steam games
     python main.py model     # run K-Means clustering
-    python main.py server    # start web UI at http://localhost:5000
+    python main.py server    # start web UI at http://localhost:5001
 """
 import sys, subprocess, webbrowser
 from pathlib import Path
@@ -20,8 +20,8 @@ def model():
 
 def server():
     import server as s
-    print("Opening http://localhost:5000")
-    s.app.run(debug=False, port=5000)
+    print("Opening http://localhost:5001")
+    s.app.run(debug=False, port=5001)
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "help"

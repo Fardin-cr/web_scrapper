@@ -182,7 +182,7 @@ def api_export():
     # Export WITHOUT scraped_at column
     fields = ["app_id","title","genre","price","original_price",
               "discount","rating","review_count","release_date",
-              "developer","tags","os_support"]
+              "developer","tags","os_support","segment"]
     buf = io.StringIO()
     w = csv.DictWriter(buf, fieldnames=fields, extrasaction="ignore", lineterminator="\r\n")
     w.writeheader()

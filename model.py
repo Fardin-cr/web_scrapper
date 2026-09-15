@@ -155,8 +155,8 @@ def save(df, prof):
     for _, row in df.iterrows():
         conn.execute("UPDATE games SET cluster=?, segment=? WHERE app_id=?",
                      (str(row.get("cluster","")), str(row.get("segment","")), row["app_id"]))
-    conn.commit(); conn.close()
-    df.to_csv(os.path.join(OUT_DIR, "clustered_games.csv"), index=False, encoding="utf-8-sig")
+    export_df = df.drop(columns=["scraped_at", "log_reviews"], errors="ignore")
+    export_df.to_csv(os.path.join(OUT_DIR, "clustered_games.csv"), index=False, encoding="utf-8-sig")
     print("[SAVE] cluster + segment written to DB and CSV")
     print("\n" + "="*65)
     print("  MARKET SEGMENT SUMMARY")

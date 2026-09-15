@@ -15,10 +15,6 @@
   #btn-export { background: #1e3a8a }
   #status { font-size: 13px; color: #555; margin-left: 8px }
 
-  .filters { margin-bottom: 10px; display: flex; gap: 8px; flex-wrap: wrap }
-  input, select { padding: 6px 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 13px }
-  input { width: 200px }
-
   #count { font-size: 12px; color: #777; margin-bottom: 6px }
 
   table { width: 100%; border-collapse: collapse; background: #fff; font-size: 13px }
@@ -43,10 +39,6 @@
   <span id="status"></span>
 </div>
 
-<div class="filters">
-  <input type="search" id="f-q" placeholder="Search title, developer, tags...">
-  <select id="f-genre"><option value="">All Genres</option></select>
-</div>
 <div id="count"></div>
 
 <table>
@@ -59,7 +51,7 @@
 <div class="pages" id="pages"></div>
 
 <script>
-let ALL = [], FILTERED = [], curPage = 1;
+let ALL = [], curPage = 1;
 const PAGE = 25;
 
 window.onload = load;
@@ -69,40 +61,21 @@ async function load() {
     const r = await fetch('/api/data');
     ALL = await r.json();
     if (!Array.isArray(ALL)) ALL = [];
-    const genres = [...new Set(ALL.map(g => g.genre).filter(Boolean))].sort();
-    const sel = document.getElementById('f-genre');
-    sel.innerHTML = '<option value="">All Genres</option>';
-    genres.forEach(g => sel.insertAdjacentHTML('beforeend', `<option value="${esc(g)}">${esc(g)}</option>`));
-    let t;
-    document.getElementById('f-q').addEventListener('input', () => { clearTimeout(t); t = setTimeout(filter, 200) });
-    document.getElementById('f-genre').addEventListener('change', filter);
-    filter();
+    render();
   } catch(e) {
     showMsg('No data yet — click Run Scraper first.');
   }
 }
 
-function filter() {
-  const q = document.getElementById('f-q').value.toLowerCase();
-  const g = document.getElementById('f-genre').value;
-  FILTERED = ALL.filter(d => {
-    if (g && d.genre !== g) return false;
-    if (q && !`${d.title||''} ${d.developer||''} ${d.tags||''}`.toLowerCase().includes(q)) return false;
-    return true;
-  });
-  curPage = 1;
-  render();
-}
-
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') }
 
 function render() {
-  const total = FILTERED.length, totalPages = Math.max(1, Math.ceil(total / PAGE));
+  const total = ALL.length, totalPages = Math.max(1, Math.ceil(total / PAGE));
   curPage = Math.min(curPage, totalPages);
-  const start = (curPage - 1) * PAGE, rows = FILTERED.slice(start, start + PAGE);
+  const start = (curPage - 1) * PAGE, rows = ALL.slice(start, start + PAGE);
   document.getElementById('count').textContent =
     `Showing ${total ? start+1 : 0}–${Math.min(start+PAGE, total)} of ${total.toLocaleString()} games`;
-  if (!rows.length) { showMsg('No results.'); document.getElementById('pages').innerHTML = ''; return; }
+  if (!rows.length) { showMsg('No data yet — click Run Scraper first.'); return; }
   document.getElementById('tbody').innerHTML = rows.map(d => `<tr>
     <td>${esc(d.title)}</td>
     <td>${esc(d.genre||'—')}</td>
@@ -143,9 +116,8 @@ async function run(type) {
 }
 
 function exportCSV() {
-  const q = document.getElementById('f-q').value, g = document.getElementById('f-genre').value;
-  const p = new URLSearchParams(); if (q) p.set('q',q); if (g) p.set('genre',g);
-  const a = document.createElement('a'); a.href = '/api/export?' + p; a.download = 'steam_games.csv';
+  const a = document.createElement('a');
+  a.href = '/api/export'; a.download = 'steam_games.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
 }
 </script>
